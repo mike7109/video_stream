@@ -1,5 +1,7 @@
 #!/bin/bash
 
+make
+
 # Путь к вашей скомпилированной программе
 EXECUTABLE=./bin/video_stream
 

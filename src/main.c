@@ -1,162 +1,230 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <SDL2/SDL.h>
-
 #include <linux/videodev2.h>
 
-#define BUF_COUNT 3
+#define CLEAR(x) memset(&(x), 0, sizeof(x))
 
-#define VIDEO_DEVICE "/dev/video0"
+#define WIDTH 640
+#define HEIGHT 480
+#define NUM_BUFFERS 2
 
-void closeCamera(int fd, void *buffer, size_t bufferSize) {
-    munmap(buffer, bufferSize);
-    close(fd);
+struct buffer {
+    void *start;
+    size_t length;
+};
+
+static char dev_name[] = "/dev/video0"; // Укажите устройство вашей камеры
+
+static int fd = -1;
+struct buffer *buffers = NULL;
+
+static void errno_exit(const char *s) {
+    fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+    exit(EXIT_FAILURE);
 }
 
-int main() {
-    int fd = open(VIDEO_DEVICE, O_RDWR | O_NONBLOCK, 0);
-    if (fd == -1) {
-        perror("Cannot open video device");
-        return -1;
-    }
+static int xioctl(int fh, int request, void *arg) {
+    int r;
+    do {
+        r = ioctl(fh, request, arg);
+    } while (-1 == r && EINTR == errno);
+    return r;
+}
 
-    // query capabilities
-    struct v4l2_capability cap;
-    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == -1) {
-        perror("Cannot get video capabilities");
-        close(fd);
-        return -1;
-    }
-
-    printf("Driver: %s\nCard: %s\nBus: %s\nVersion: %u\nCapabilities: %08X\n",
-           cap.driver, cap.card, cap.bus_info, cap.version, cap.capabilities);
-
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-        fprintf(stderr, "Device does not support video capturing\n");
-        close(fd);
-        return -1;
-    }
-
-    // set format
-    struct v4l2_format fmt;
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = 640;
-    fmt.fmt.pix.height = 480;
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
-    fmt.fmt.pix.field = V4L2_FIELD_NONE;
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) == -1) {
-        perror("Cannot set video fmt");
-        close(fd);
-        return -1;
-    }
-
-    size_t bufferSize = fmt.fmt.pix.sizeimage;
-
-    // request buffers
+static void init_mmap(void) {
     struct v4l2_requestbuffers req;
-    req.count = 1;
+    CLEAR(req);
+
+    req.count = NUM_BUFFERS;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
-    if (-1 == ioctl(fd, VIDIOC_REQBUFS, &req)) {
-        perror("Cannot request buffers");
-        close(fd);
-        return -1;
+
+    if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) {
+        if (EINVAL == errno) {
+            fprintf(stderr, "%s does not support memory mapping\n", dev_name);
+            exit(EXIT_FAILURE);
+        } else {
+            errno_exit("VIDIOC_REQBUFS");
+        }
     }
 
+    if (req.count < 2) {
+        fprintf(stderr, "Insufficient buffer memory on %s\n", dev_name);
+        exit(EXIT_FAILURE);
+    }
+
+    buffers = calloc(req.count, sizeof(*buffers));
+
+    if (!buffers) {
+        fprintf(stderr, "Out of memory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (unsigned int i = 0; i < req.count; ++i) {
+        struct v4l2_buffer buf;
+        CLEAR(buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+
+        if (-1 == xioctl(fd, VIDIOC_QUERYBUF, &buf))
+            errno_exit("VIDIOC_QUERYBUF");
+
+        buffers[i].length = buf.length;
+        buffers[i].start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
+
+        if (MAP_FAILED == buffers[i].start)
+            errno_exit("mmap");
+    }
+}
+
+static void init_device(void) {
+    struct v4l2_capability cap;
+    struct v4l2_format fmt;
+
+    if (-1 == xioctl(fd, VIDIOC_QUERYCAP, &cap)) {
+        if (EINVAL == errno) {
+            fprintf(stderr, "%s is no V4L2 device\n", dev_name);
+            exit(EXIT_FAILURE);
+        } else {
+            errno_exit("VIDIOC_QUERYCAP");
+        }
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+        fprintf(stderr, "%s is no video capture device\n", dev_name);
+        exit(EXIT_FAILURE);
+    }
+
+    if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
+        fprintf(stderr, "%s does not support streaming i/o\n", dev_name);
+        exit(EXIT_FAILURE);
+    }
+
+    CLEAR(fmt);
+
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width = WIDTH;
+    fmt.fmt.pix.height = HEIGHT;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmt.fmt.pix.field = V4L2_FIELD_INTERLACED;
+
+    if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
+        errno_exit("VIDIOC_S_FMT");
+
+    init_mmap();
+}
+
+static void start_capturing(void) {
+    unsigned int i;
+    enum v4l2_buf_type type;
+
+    for (i = 0; i < NUM_BUFFERS; ++i) {
+        struct v4l2_buffer buf;
+        CLEAR(buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+
+        if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+            errno_exit("VIDIOC_QBUF");
+    }
+
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
+        errno_exit("VIDIOC_STREAMON");
+}
+
+static void mainloop(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *texture) {
     struct v4l2_buffer buf;
-    memset(&buf, 0, sizeof(buf));
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    //buf.index = bufferindex;
-    if(-1 == ioctl(fd, VIDIOC_QUERYBUF, &buf)) {
-        perror("Cannot set video fmt");
-        close(fd);
-        return -1;
-    }
-
-    void *buffer = mmap (NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
-    if (buffer == MAP_FAILED) {
-        perror("Cannot map video buffer");
-        close(fd);
-        return -1;
-    }
-
-    SDL_Init(SDL_INIT_VIDEO);
-
-    SDL_Window *window = SDL_CreateWindow("Video Stream", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                                          fmt.fmt.pix.width, fmt.fmt.pix.height, SDL_WINDOW_SHOWN);
-    if (!window) {
-        fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
-        closeCamera(fd, buffer, bufferSize);
-        SDL_Quit();
-        return -1;
-    }
-
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (!renderer) {
-        fprintf(stderr, "SDL_CreateRenderer Error: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
-        closeCamera(fd, buffer, bufferSize);
-        SDL_Quit();
-        return -1;
-    }
-
-    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR32,
-                                             SDL_TEXTUREACCESS_STREAMING, fmt.fmt.pix.width, fmt.fmt.pix.height);
-    if (!texture) {
-        fprintf(stderr, "SDL_CreateTexture Error: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        closeCamera(fd, buffer, bufferSize);
-        SDL_Quit();
-        return -1;
-    }
-
-    if (ioctl(fd, VIDIOC_STREAMON, &buf.type) == -1) {
-        perror("Cannot start streaming");
-        closeCamera(fd, buffer, bufferSize);
-        SDL_DestroyTexture(texture);
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return -1;
-    }
-
-    SDL_Event e;
+    SDL_Event event;
     int quit = 0;
+
     while (!quit) {
-        while (SDL_PollEvent(&e) != 0) {
-            if (e.type == SDL_QUIT) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
                 quit = 1;
             }
         }
 
-        if (ioctl(fd, VIDIOC_DQBUF, &buf) == -1) {
-            perror("Cannot dequeue buffer");
-            break;
+        CLEAR(buf);
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+
+        if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
+            switch (errno) {
+                case EAGAIN:
+                    continue;
+
+                case EIO:
+                default:
+                    errno_exit("VIDIOC_DQBUF");
+            }
         }
 
-        // Процессинг и отображение кадра в текстуре
-        SDL_UpdateTexture(texture, NULL, buffer, fmt.fmt.pix.width * 4);
+        SDL_UpdateTexture(texture, NULL, buffers[buf.index].start, WIDTH * 2);
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
 
-        if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
-            perror("Cannot enqueue buffer");
-            break;
-        }
+        if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+            errno_exit("VIDIOC_QBUF");
+    }
+}
+
+static void stop_capturing(void) {
+    enum v4l2_buf_type type;
+
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
+        errno_exit("VIDIOC_STREAMOFF");
+}
+
+static void uninit_device(void) {
+    for (unsigned int i = 0; i < NUM_BUFFERS; ++i)
+        if (-1 == munmap(buffers[i].start, buffers[i].length))
+            errno_exit("munmap");
+
+    free(buffers);
+}
+
+static void close_device(void) {
+    if (-1 == close(fd))
+        errno_exit("close");
+
+    fd = -1;
+}
+
+int main(void) {
+    SDL_Init(SDL_INIT_VIDEO);
+
+    SDL_Window *window = SDL_CreateWindow("V4L2 SDL Example", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
+    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YUY2, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+
+    fd = open(dev_name, O_RDWR | O_NONBLOCK, 0);
+
+    if (fd == -1) {
+        perror("Cannot open device");
+        exit(EXIT_FAILURE);
     }
 
-    if (ioctl(fd, VIDIOC_STREAMOFF, &buf.type) == -1) {
-        perror("Cannot stop streaming");
-    }
+    init_device();
+    start_capturing();
+    mainloop(window, renderer, texture);
+    stop_capturing();
+    uninit_device();
+    close_device();
 
-    closeCamera(fd, buffer, bufferSize);
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
