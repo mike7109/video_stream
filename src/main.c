@@ -88,7 +88,7 @@ int main() {
     SDL_Init(SDL_INIT_VIDEO);
 
     SDL_Window *window = SDL_CreateWindow("Video Stream", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                                          fmt.fmt.pix.width, format.fmt.pix.height, SDL_WINDOW_SHOWN);
+                                          fmt.fmt.pix.width, fmt.fmt.pix.height, SDL_WINDOW_SHOWN);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
         closeCamera(fd, buffer, bufferSize);
@@ -106,7 +106,7 @@ int main() {
     }
 
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR32,
-                                             SDL_TEXTUREACCESS_STREAMING, fmt.fmt.pix.width, format.fmt.pix.height);
+                                             SDL_TEXTUREACCESS_STREAMING, fmt.fmt.pix.width, fmt.fmt.pix.height);
     if (!texture) {
         fprintf(stderr, "SDL_CreateTexture Error: %s\n", SDL_GetError());
         SDL_DestroyRenderer(renderer);
