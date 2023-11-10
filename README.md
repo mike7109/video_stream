@@ -1,0 +1,4 @@
+```bash
+sudo ffmpeg -f v4l2 -i /dev/video0 -pix_fmt bgra -vf 'format=bgra' -f sdl 'SDL output window'
+```
+

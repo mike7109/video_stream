@@ -2,7 +2,7 @@ NAME = video_stream
 
 CC = gcc
 CFLAGS = -Wall -I./include
-LDFLAGS = -lm
+LDFLAGS = -lm -lSDL2 -lv4l2
 
 SRC_DIR = ./src
 BUILD_DIR = ./build
