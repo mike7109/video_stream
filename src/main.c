@@ -6,14 +6,18 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+
 #include <SDL2/SDL.h>
+
 #include <linux/videodev2.h>
+
+#include "../include/image_processing/image_processing.h"
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 #define WIDTH 640
 #define HEIGHT 480
-#define NUM_BUFFERS 2
+#define NUM_BUFFERS 32
 
 struct buffer {
     void *start;
@@ -170,6 +174,9 @@ static void mainloop(SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *te
                     errno_exit("VIDIOC_DQBUF");
             }
         }
+
+        // Обработка кадр
+        process_frame(buffers[buf.index].start, WIDTH, HEIGHT);
 
         SDL_UpdateTexture(texture, NULL, buffers[buf.index].start, WIDTH * 2);
         SDL_RenderClear(renderer);
