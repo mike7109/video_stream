@@ -1,7 +1,7 @@
 NAME = video_stream
 
 CC = gcc
-CFLAGS = -Wall -I./include/image_processing.h
+CFLAGS = -g -Wall -I./include/image_processing.h
 LDFLAGS = -lm -lSDL2 -lv4l2
 
 SRC_DIR = ./src
