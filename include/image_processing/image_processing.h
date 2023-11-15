@@ -4,6 +4,6 @@
 
 #include <stdint.h>
 
-void process_frame(void *p, int width, int height);
+void process_frame(uint8_t *p, int width, int height);
 
 #endif // IMAGE_PROCESSING_H

@@ -9,6 +9,8 @@
 #include <linux/videodev2.h>
 #include <errno.h>
 
+#include "../include/image_processing/image_processing.h"
+
 #define WIDTH 640
 #define HEIGHT 480
 #define NUM_CAMERAS 2
@@ -175,6 +177,8 @@ void updateTexture(struct Camera *camera, SDL_Texture *texture) {
     if (ioctl(camera->fd, VIDIOC_DQBUF, &buf) == -1) {
         handleError("Error dequeuing buffer");
     }
+
+    //process_frame(camera->buffers[buf.index].start, WIDTH, HEIGHT);
 
     SDL_UpdateTexture(texture, NULL, camera->buffers[buf.index].start, WIDTH * 2);
 
