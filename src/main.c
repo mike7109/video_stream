@@ -26,6 +26,8 @@ struct Camera {
     struct Buffer *buffers;
 };
 
+struct Camera cameras[NUM_CAMERAS];
+
 SDL_Window *window = NULL;
 SDL_Renderer *renderer = NULL;
 SDL_Texture *textures[NUM_CAMERAS];
@@ -150,22 +152,55 @@ void initTextures() {
 
 void startCapturing(struct Camera *cameras) {
     for (int i = 0; i < NUM_CAMERAS; ++i) {
+        // Включение стрима для текущей камеры
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
         if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMON, &type))
             handleError("VIDIOC_STREAMON");
 
+        // Инициализация буферов и помещение их в очередь для захвата
         struct v4l2_buffer buf;
         for (int j = 0; j < NUM_BUFFERS; j++) {
             memset(&buf, 0, sizeof(buf));
             buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = j; // Указываем индекс буфера
+            buf.index = j;
 
-            // Поместите буфер в очередь для захвата
             if (ioctl(cameras[i].fd, VIDIOC_QBUF, &buf) == -1) {
                 handleError("Error VIDIOC_QBUF");
             }
+        }
+
+        // Отключение стрима для текущей камеры перед включением следующей
+        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMOFF, &type))
+            handleError("VIDIOC_STREAMOFF");
+    }
+}
+
+void *captureThread(void *arg) {
+    struct Camera *camera = (struct Camera *)arg;
+    struct v4l2_buffer buf;
+
+    while (1) {
+        for (int i = 0; i < NUM_CAMERAS; i++) {
+
+            enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMON, &type))
+                handleError("VIDIOC_STREAMON");
+
+            memset(&buf, 0, sizeof(buf));
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            buf.memory = V4L2_MEMORY_MMAP;
+
+            // Dequeue buffer from the current camera
+            if (ioctl(camera->fd, VIDIOC_DQBUF, &buf) == -1) {
+                handleError("Error dequeuing buffer");
+            }
+
+            // Выключение стрима для текущей активной камеры
+            type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMOFF, &type))
+                handleError("VIDIOC_STREAMOFF");
         }
 
     }
@@ -193,6 +228,10 @@ void updateTexture(struct Camera *camera, SDL_Texture *texture) {
 void displayCameras(struct Camera *cameras) {
     SDL_Event event;
     int quit = 0;
+    int activeCamera = 0;
+
+    pthread_t captureThread();
+
     while (!quit) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -200,9 +239,10 @@ void displayCameras(struct Camera *cameras) {
             }
         }
 
-        for (int i = 0; i < NUM_CAMERAS; ++i) {
-            updateTexture(&cameras[i], textures[i]);
-        }
+
+        // Обновление текстуры только для текущей активной камеры
+        updateTexture(&cameras[activeCamera], textures[activeCamera]);
+
 
         SDL_RenderClear(renderer);
 
@@ -212,12 +252,15 @@ void displayCameras(struct Camera *cameras) {
             } else {
                 SDL_RenderCopy(renderer, textures[i], NULL, &(SDL_Rect){(i-2) * WIDTH, HEIGHT, WIDTH, HEIGHT});
             }
-
         }
 
         SDL_RenderPresent(renderer);
+
+        // Переключение на следующую камеру
+        activeCamera = (activeCamera + 1) % NUM_CAMERAS;
     }
 }
+
 
 void stopCapturing(struct Camera *cameras) {
     for (int i = 0; i < NUM_CAMERAS; ++i) {
