@@ -13,7 +13,7 @@
 
 #define WIDTH 640
 #define HEIGHT 480
-#define NUM_CAMERAS 2
+#define NUM_CAMERAS 4
 #define NUM_BUFFERS 1
 
 struct Buffer {
@@ -40,8 +40,8 @@ void initSDL() {
         handleError("SDL initialization failed");
     }
 
-    window = SDL_CreateWindow("Camera Display", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH * NUM_CAMERAS,
-                              HEIGHT, SDL_WINDOW_SHOWN);
+    window = SDL_CreateWindow("Camera Display", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH * 2,
+                              HEIGHT * 2, SDL_WINDOW_SHOWN);
     if (!window) {
         handleError("SDL window creation failed");
     }
@@ -83,7 +83,7 @@ void initCamera(struct Camera *camera, const char *dev_name) {
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     fmt.fmt.pix.width = WIDTH;
     fmt.fmt.pix.height = HEIGHT;
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
 
     if (ioctl(camera->fd, VIDIOC_S_FMT, &fmt) == -1) {
         handleError("Error setting video format");
@@ -126,7 +126,15 @@ void initCamera(struct Camera *camera, const char *dev_name) {
 void initCameras(struct Camera *cameras) {
     char dev_name[13];
     for (int i = 0; i < NUM_CAMERAS; ++i) {
-        sprintf(dev_name, "/dev/video%d", 2 * i);
+        if (i == 0)
+            sprintf(dev_name, "/dev/video0");
+        if (i == 1)
+            sprintf(dev_name, "/dev/video2");
+        if (i == 2)
+            sprintf(dev_name, "/dev/video4");
+        if (i == 3)
+            sprintf(dev_name, "/dev/video6");
+
         initCamera(&cameras[i], dev_name);
     }
 }
@@ -144,9 +152,8 @@ void startCapturing(struct Camera *cameras) {
     for (int i = 0; i < NUM_CAMERAS; ++i) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-        if (ioctl(cameras[i].fd, VIDIOC_STREAMON, &type) == -1) {
-            handleError("Error starting capture");
-        }
+        if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMON, &type))
+            handleError("VIDIOC_STREAMON");
 
         struct v4l2_buffer buf;
         for (int j = 0; j < NUM_BUFFERS; j++) {
@@ -160,10 +167,6 @@ void startCapturing(struct Camera *cameras) {
                 handleError("Error VIDIOC_QBUF");
             }
         }
-
-        type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if (-1 == ioctl(cameras[i].fd, VIDIOC_STREAMON, &type))
-            handleError("VIDIOC_STREAMON");
 
     }
 }
@@ -204,7 +207,12 @@ void displayCameras(struct Camera *cameras) {
         SDL_RenderClear(renderer);
 
         for (int i = 0; i < NUM_CAMERAS; ++i) {
-            SDL_RenderCopy(renderer, textures[i], NULL, &(SDL_Rect){i * WIDTH, 0, WIDTH, HEIGHT});
+            if (i < 2) {
+                SDL_RenderCopy(renderer, textures[i], NULL, &(SDL_Rect){i * WIDTH, 0, WIDTH, HEIGHT});
+            } else {
+                SDL_RenderCopy(renderer, textures[i], NULL, &(SDL_Rect){(i-2) * WIDTH, HEIGHT, WIDTH, HEIGHT});
+            }
+
         }
 
         SDL_RenderPresent(renderer);
